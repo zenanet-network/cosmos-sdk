@@ -188,6 +188,11 @@ type BaseApp struct {
 
 	// includeNestedMsgsGas holds a set of message types for which gas costs for its nested messages are calculated.
 	includeNestedMsgsGas map[string]struct{}
+
+	// side channel
+	beginSideBlocker     sdk.BeginSideBlocker
+	deliverSideTxHandler sdk.DeliverSideTxHandler
+	postDeliverTxHandler sdk.PostDeliverTxHandler
 }
 
 // NewBaseApp returns a reference to an initialized BaseApp. It accepts a
@@ -832,6 +837,25 @@ type HasNestedMsgs interface {
 // and execute successfully. An error is returned otherwise.
 // both txbytes and the decoded tx are passed to runTx to avoid the state machine encoding the tx and decoding the transaction twice
 // passing the decoded tx to runTX is optional, it will be decoded if the tx is nil
+//
+// The transactions is processed via a state machine that roughly looks as follows:
+//
+// CheckTx
+//
+//	┌─── CheckTx
+//	├─── ValidateBasicMsgs
+//	├─── AnteHandler
+//	├─── MempoolFeeDecorator (optional)
+//	└─── PostHandler (optional)
+//
+// DeliverTx
+//
+//	┌─── CheckTx
+//	├─── ValidateBasicMsgs
+//	├─── AnteHandler
+//	├─── RunMsgs
+//	├─── PostHandler (optional)
+//	└─── PostDeliverTxHandler (optional, only in execModeFinalize)
 func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.GasInfo, result *sdk.Result, anteEvents []abci.Event, err error) {
 	// NOTE: GasWanted should be returned by the AnteHandler. GasUsed is
 	// determined by the GasMeter. We need access to the context to get the gas
@@ -1014,6 +1038,11 @@ func (app *BaseApp) runTx(mode execMode, txBytes []byte, tx sdk.Tx) (gInfo sdk.G
 			// append the events in the order of occurrence
 			result.Events = append(anteEvents, result.Events...)
 		}
+	}
+
+	// postDeliverTxHandler 호출 추가
+	if mode == execModeFinalize && app.postDeliverTxHandler != nil && result != nil {
+		app.postDeliverTxHandler(ctx, tx, *result)
 	}
 
 	return gInfo, result, anteEvents, err
@@ -1247,4 +1276,96 @@ func (app *BaseApp) Close() error {
 // GetBaseApp returns the pointer to itself.
 func (app *BaseApp) GetBaseApp() *BaseApp {
 	return app
+}
+
+//
+// Side channel
+//
+
+// BeginSideBlock implements the ABCI application interface.
+func (app *BaseApp) BeginSideBlock(req sdk.RequestBeginSideBlock) (res sdk.ResponseBeginSideBlock) {
+	if app.beginSideBlocker != nil {
+		res = app.beginSideBlocker(app.finalizeBlockState.ctx, req)
+	}
+
+	return
+}
+
+// DeliverSideTx implements the ABCI application interface.
+func (app *BaseApp) DeliverSideTx(req sdk.RequestDeliverSideTx) (res sdk.ResponseDeliverSideTx) {
+	tx, err := app.txDecoder(req.Tx)
+	if err != nil {
+		res = sdk.ResponseDeliverSideTx{
+			Result:    sdk.SideTxResultType_Skip,
+			Code:      uint32(1),
+			Codespace: "sdk",
+		}
+	} else {
+		res = app.runSideTx(req.Tx, tx, req)
+	}
+
+	return
+}
+
+// runSideTx processes a side transaction. App can make an external call here.
+func (app *BaseApp) runSideTx(txBytes []byte, tx sdk.Tx, req sdk.RequestDeliverSideTx) (res sdk.ResponseDeliverSideTx) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = sdk.ResponseDeliverSideTx{
+				Result:    sdk.SideTxResultType_Skip,
+				Code:      uint32(1),
+				Codespace: "sdk",
+			}
+		}
+	}()
+
+	var msgs = tx.GetMsgs()
+	if err := validateBasicTxMsgs(app.msgServiceRouter, msgs); err != nil {
+		res = sdk.ResponseDeliverSideTx{
+			Result:    sdk.SideTxResultType_Skip,
+			Code:      uint32(1),
+			Codespace: "sdk",
+		}
+		return
+	}
+
+	if app.deliverSideTxHandler != nil {
+		// get deliver-tx context
+		ctx := app.getContextForTx(execModeFinalize, txBytes)
+
+		res = app.deliverSideTxHandler(ctx, tx, req)
+	} else {
+		res = sdk.ResponseDeliverSideTx{
+			Result: sdk.SideTxResultType_Skip,
+		}
+	}
+
+	return
+}
+
+// SetDeliverSideTxHandler sets the side chain transaction handler.
+func (app *BaseApp) SetDeliverSideTxHandler(handler sdk.DeliverSideTxHandler) {
+	if app.sealed {
+		panic("SetDeliverSideTxHandler() on sealed BaseApp")
+	}
+
+	app.deliverSideTxHandler = handler
+}
+
+// SetPostDeliverTxHandler sets the post deliver transaction handler.
+func (app *BaseApp) SetPostDeliverTxHandler(handler sdk.PostDeliverTxHandler) {
+	if app.sealed {
+		panic("SetPostDeliverTxHandler() on sealed BaseApp")
+	}
+
+	app.postDeliverTxHandler = handler
+}
+
+// SetBeginSideBlocker sets the side chain begin blocker handler.
+func (app *BaseApp) SetBeginSideBlocker(handler sdk.BeginSideBlocker) {
+	if app.sealed {
+		panic("SetBeginSideBlocker() on sealed BaseApp")
+	}
+
+	app.beginSideBlocker = handler
 }

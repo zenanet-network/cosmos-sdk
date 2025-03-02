@@ -15,9 +15,13 @@ import (
 	"cosmossdk.io/math"
 	"cosmossdk.io/x/staking/types"
 
+	"container/list"
+
 	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
+
+const aminoCacheSize = 500
 
 // Implements ValidatorSet interface
 var _ types.ValidatorSet = Keeper{}
@@ -63,6 +67,10 @@ type Keeper struct {
 	validatorAddressCodec addresscodec.Codec
 	consensusAddressCodec addresscodec.Codec
 	cometInfoService      comet.Service
+
+	// Cache for validator queries
+	validatorCache     map[string]cachedValidator
+	validatorCacheList *list.List
 
 	Schema collections.Schema
 
@@ -151,6 +159,8 @@ func NewKeeper(
 		validatorAddressCodec: validatorAddressCodec,
 		consensusAddressCodec: consensusAddressCodec,
 		cometInfoService:      cometInfoService,
+		validatorCache:        make(map[string]cachedValidator, 500),
+		validatorCacheList:    list.New(),
 		LastTotalPower:        collections.NewItem(sb, types.LastTotalPowerKey, "last_total_power", sdk.IntValue),
 		Delegations: collections.NewMap(
 			sb, types.DelegationKey, "delegations",

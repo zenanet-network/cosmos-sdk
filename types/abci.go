@@ -71,3 +71,18 @@ type EndBlock struct {
 type BeginBlock struct {
 	Events []abci.Event
 }
+
+/*
+	metic bor network reference
+*/
+// BeginSideBlocker defines a function type alias for executing application
+// business logic for side chain block processing.
+type BeginSideBlocker func(ctx Context, req RequestBeginSideBlock) ResponseBeginSideBlock
+
+// DeliverSideTxHandler defines a function type alias for executing application
+// business logic for side chain transaction processing.
+type DeliverSideTxHandler func(ctx Context, tx Tx, req RequestDeliverSideTx) ResponseDeliverSideTx
+
+// PostDeliverTxHandler defines a function type alias for executing application
+// business logic after a transaction has been processed.
+type PostDeliverTxHandler func(ctx Context, tx Tx, result Result)

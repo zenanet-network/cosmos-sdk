@@ -1170,3 +1170,16 @@ func (k Keeper) ValidateUnbondAmount(
 
 	return shares, nil
 }
+
+// GetDelegation returns a delegation.
+func (k Keeper) GetDelegation(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) (delegation types.Delegation, found bool) {
+	delegation, err := k.Delegations.Get(ctx, collections.Join(delAddr, valAddr))
+	if err != nil {
+		if errors.Is(err, collections.ErrNotFound) {
+			return delegation, false
+		}
+		// 에러가 발생하면 빈 delegation과 false를 반환
+		return types.Delegation{}, false
+	}
+	return delegation, true
+}

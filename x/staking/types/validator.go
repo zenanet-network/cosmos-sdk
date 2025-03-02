@@ -123,7 +123,8 @@ type ValidatorsByVotingPower []Validator
 
 func (valz ValidatorsByVotingPower) Len() int { return len(valz) }
 
-func (valz ValidatorsByVotingPower) Less(i, j int, r math.Int) bool {
+// LessWithPowerReduction compares validators by power with a specified power reduction value
+func (valz ValidatorsByVotingPower) LessWithPowerReduction(i, j int, r math.Int) bool {
 	if valz[i].ConsensusPower(r) == valz[j].ConsensusPower(r) {
 		addrI, errI := valz[i].GetConsAddr()
 		addrJ, errJ := valz[j].GetConsAddr()
@@ -134,6 +135,10 @@ func (valz ValidatorsByVotingPower) Less(i, j int, r math.Int) bool {
 		return bytes.Compare(addrI, addrJ) == -1
 	}
 	return valz[i].ConsensusPower(r) > valz[j].ConsensusPower(r)
+}
+
+func (valz ValidatorsByVotingPower) Less(i, j int) bool {
+	return valz.LessWithPowerReduction(i, j, math.ZeroInt())
 }
 
 func (valz ValidatorsByVotingPower) Swap(i, j int) {

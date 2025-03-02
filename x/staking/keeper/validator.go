@@ -22,8 +22,67 @@ import (
 
 var timeBzKeySize = uint64(29) // time bytes key size is 29 by default
 
+// Cache the decoding of validators, as it can be the case that repeated slashing calls
+// cause many calls to GetValidator, which were shown to throttle the state machine in our
+// simulation. Note this is quite biased though, as the simulator does more slashes than a
+// live chain should, however we require the slashing to be fast as noone pays gas for it.
+type cachedValidator struct {
+	val        types.Validator
+	marshalled string // marshalled bytes for the validator object (not operator address)
+}
+
+func newCachedValidator(val types.Validator, marshalled string) cachedValidator {
+	return cachedValidator{
+		val:        val,
+		marshalled: marshalled,
+	}
+}
+
 // GetValidator gets a single validator
 func (k Keeper) GetValidator(ctx context.Context, addr sdk.ValAddress) (validator types.Validator, err error) {
+	// 캐시에서 먼저 검색
+	if k.validatorCache != nil {
+		// 캐시에서 검색하기 위해 먼저 키를 생성
+		store := k.KVStoreService.OpenKVStore(ctx)
+		key := types.GetValidatorKey(addr)
+		value, err := store.Get(key)
+		if err != nil {
+			return validator, err
+		}
+
+		if value == nil {
+			return types.Validator{}, types.ErrNoValidatorFound
+		}
+
+		// 캐시에서 검색
+		strValue := string(value)
+		if val, ok := k.validatorCache[strValue]; ok {
+			valToReturn := val.val
+			// 캐시의 값을 변경하지 않음
+			valToReturn.OperatorAddress = addr.String()
+			return valToReturn, nil
+		}
+
+		// 캐시에 없으면 언마샬하고 캐시에 추가
+		validator, err = types.UnmarshalValidator(k.cdc, value)
+		if err != nil {
+			return validator, err
+		}
+
+		cachedVal := newCachedValidator(validator, strValue)
+		k.validatorCache[strValue] = cachedVal
+		k.validatorCacheList.PushBack(cachedVal)
+
+		// 캐시가 너무 크면 가장 오래된 항목 제거
+		if k.validatorCacheList.Len() > 500 {
+			valToRemove := k.validatorCacheList.Remove(k.validatorCacheList.Front()).(cachedValidator)
+			delete(k.validatorCache, valToRemove.marshalled)
+		}
+
+		return validator, nil
+	}
+
+	// 캐시가 비활성화된 경우 기존 방식으로 처리
 	validator, err = k.Validators.Get(ctx, addr)
 	if err != nil {
 		if errors.Is(err, collections.ErrNotFound) {
@@ -66,6 +125,7 @@ func (k Keeper) GetValidatorByConsAddr(ctx context.Context, consAddr sdk.ConsAdd
 		return types.Validator{}, types.ErrNoValidatorFound
 	}
 
+	// 캐싱된 GetValidator 함수 사용
 	return k.GetValidator(ctx, opAddr)
 }
 
